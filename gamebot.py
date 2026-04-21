@@ -4,627 +4,375 @@ from pygame.locals import *
 import random
 from copy import deepcopy
 import math
-from time import sleep
+
 pygame.font.init()
 
-
-##COLORS##
-#             R    G    B
 WHITE = (255, 255, 255)
-BLUE = (0,   0, 255)
-RED = (255,   0,   0)
+BLUE  = (0,   0, 255)
+RED   = (255, 0,   0)
 BLACK = (0,   0,   0)
-GOLD = (255, 215,   0)
-HIGH = (160, 190, 255)
+GOLD  = (255, 215,  0)
+HIGH  = (160, 190, 255)
 
-##DIRECTIONS##
 NORTHWEST = "northwest"
 NORTHEAST = "northeast"
 SOUTHWEST = "southwest"
 SOUTHEAST = "southeast"
 
+CENTER_SQUARES = {(3,3),(4,3),(3,4),(4,4)}
+NEAR_CENTER    = {(2,2),(5,2),(2,5),(5,5),(3,2),(4,2),(2,3),(5,3),(2,4),(5,4),(3,5),(4,5)}
 
 class Bot:
     def __init__(self, game, color, method='random', mid_eval=None, end_eval=None, depth=1):
         self.method = method
-        if mid_eval == 'piece2val':
-            self._mid_eval = self._piece2val
-        elif mid_eval == 'piece_and_board':
-            self._mid_eval = self._piece_and_board2val
-        elif mid_eval == 'piece_and_row':
-            self._mid_eval = self._piece_and_row2val
-        elif mid_eval == 'piece_and_board_pov':
-            self._mid_eval = self._piece_and_board_pov2val
-        if end_eval == 'sum_of_dist':
-            self._end_eval = self._sum_of_dist
-        elif end_eval == 'farthest_piece':
-            self._end_eval = self._farthest_piece
-        else:
-            self._end_eval = None
+        if   mid_eval == 'piece2val':          self._mid_eval = self._piece2val
+        elif mid_eval == 'piece_and_board':    self._mid_eval = self._piece_and_board2val
+        elif mid_eval == 'piece_and_row':      self._mid_eval = self._piece_and_row2val
+        elif mid_eval == 'piece_and_board_pov':self._mid_eval = self._piece_and_board_pov2val
+        else:                                  self._mid_eval = self._piece_and_board2val
+        if   end_eval == 'sum_of_dist':        self._end_eval = self._sum_of_dist
+        elif end_eval == 'farthest_piece':     self._end_eval = self._farthest_piece
+        else:                                  self._end_eval = None
         self.depth = depth
-        self.game = game
+        self.game  = game
         self.color = color
         self.eval_color = color
-        if self.color == BLUE:
-            self.adversary_color = RED
-        else:
-            self.adversary_color = BLUE
+        self.adversary_color = RED if color == BLUE else BLUE
         self._current_eval = self._mid_eval
         self._end_eval_time = False
-        self._count_nodes = 0
+        self._count_nodes   = 0
+
+    def _is_endgame(self, board):
+        total = sum(1 for i in range(8) for j in range(8) if board.location(i,j).occupant is not None)
+        return total < 8
+
+    def _all_kings(self, board):
+        for i in range(8):
+            for j in range(8):
+                occ = board.location(i,j).occupant
+                if occ is not None and not occ.king:
+                    return False
+        return True
 
     def step(self, board, return_count_nodes=False):
         self._count_nodes = 0
-        if(self._end_eval is not None and self._end_eval_time == False):
-            if self._all_kings(board):
+        if self._end_eval is not None and not self._end_eval_time:
+            if self._is_endgame(board):
                 print('END EVAL is on')
                 self._end_eval_time = True
-                self._current_eval = self._end_eval
-        if self.method == 'random':
-            self._random_step(board)
-        elif self.method == 'minmax':
-            self._minmax_step(board)
-        elif self.method == 'alpha_beta':
-            self._alpha_beta_step(board)
-        if return_count_nodes:
-            return self._count_nodes
+                self._current_eval  = self._end_eval
+        if   self.method == 'random':     self._random_step(board)
+        elif self.method == 'minmax':     self._minmax_step(board)
+        elif self.method == 'alpha_beta': self._alpha_beta_step(board)
+        if return_count_nodes: return self._count_nodes
+
+    def get_top_candidates(self, board, n=4):
+        self._count_nodes = 0
+        if self._end_eval is not None and not self._end_eval_time:
+            if self._is_endgame(board):
+                self._end_eval_time = True
+                self._current_eval  = self._end_eval
+        candidates = []
+        for pos in self._generate_move(board):
+            for action in pos[2]:
+                bc = deepcopy(board)
+                self.color, self.adversary_color = self.adversary_color, self.color
+                self.game.turn = self.color
+                self._action_on_board(bc, pos, action)
+                self._count_nodes += 1
+                if self._check_for_endgame(bc):
+                    score = float('inf')
+                else:
+                    if self.method == 'alpha_beta':
+                        _, _, score = self._alpha_beta(max(0,self.depth-2), bc, 'min', -float('inf'), float('inf'))
+                    else:
+                        _, _, score = self._minmax(max(0,self.depth-2), bc, 'min')
+                    if score is None: score = 0
+                self.color, self.adversary_color = self.adversary_color, self.color
+                self.game.turn = self.color
+                candidates.append({'pos':(pos[0],pos[1]),'action':action,'score':score,'board_clone':bc,'rejected':False})
+        candidates.sort(key=lambda c: c['score'] if c['score'] != float('inf') else 1e9, reverse=True)
+        for i,c in enumerate(candidates): c['rejected'] = i >= n
+        if candidates:
+            best = candidates[0]
+            self._action(best['pos'], best['action'], board)
+        return candidates[:n], candidates[n:]
 
     def _action(self, current_pos, final_pos, board):
         if current_pos is None:
-            self.game.end_turn()
-            # board.repr_matrix()
-            # print(self._generate_all_possible_moves(board))
-        # print(current_pos, final_pos, board.location(current_pos[0], current_pos[1]).occupant)
+            self.game.end_turn(); return
         if self.game.hop == False:
-            if board.location(final_pos[0], final_pos[1]).occupant != None and board.location(final_pos[0], final_pos[1]).occupant.color == self.game.turn:
+            if board.location(final_pos[0],final_pos[1]).occupant is not None and board.location(final_pos[0],final_pos[1]).occupant.color == self.game.turn:
                 current_pos = final_pos
-
-            elif current_pos != None and final_pos in board.legal_moves(current_pos[0], current_pos[1]):
-
-                board.move_piece(
-                    current_pos[0], current_pos[1], final_pos[0], final_pos[1])
-
-                if final_pos not in board.adjacent(current_pos[0], current_pos[1]):
-                    board.remove_piece(current_pos[0] + (final_pos[0] - current_pos[0]) //
-                                       2, current_pos[1] + (final_pos[1] - current_pos[1]) // 2)
-
+            elif current_pos is not None and final_pos in board.legal_moves(current_pos[0],current_pos[1]):
+                board.move_piece(current_pos[0],current_pos[1],final_pos[0],final_pos[1])
+                if final_pos not in board.adjacent(current_pos[0],current_pos[1]):
+                    board.remove_piece(current_pos[0]+(final_pos[0]-current_pos[0])//2, current_pos[1]+(final_pos[1]-current_pos[1])//2)
                     self.game.hop = True
                     current_pos = final_pos
-                    final_pos = board.legal_moves(
-                        current_pos[0], current_pos[1], True)
-                    if final_pos != []:
-                        # print("HOP in Action", current_pos, final_pos)
-                        self._action(current_pos, final_pos[0], board)
+                    final_pos   = board.legal_moves(current_pos[0],current_pos[1],True)
+                    if final_pos: self._action(current_pos, final_pos[0], board)
                     self.game.end_turn()
-
         if self.game.hop == True:
-            if current_pos != None and final_pos in board.legal_moves(current_pos[0], current_pos[1], self.game.hop):
-                board.move_piece(
-                    current_pos[0], current_pos[1], final_pos[0], final_pos[1])
-                board.remove_piece(current_pos[0] + (final_pos[0] - current_pos[0]) //
-                                   2, current_pos[1] + (final_pos[1] - current_pos[1]) // 2)
-
-            if board.legal_moves(final_pos[0], final_pos[1], self.game.hop) == []:
+            if current_pos is not None and final_pos in board.legal_moves(current_pos[0],current_pos[1],self.game.hop):
+                board.move_piece(current_pos[0],current_pos[1],final_pos[0],final_pos[1])
+                board.remove_piece(current_pos[0]+(final_pos[0]-current_pos[0])//2, current_pos[1]+(final_pos[1]-current_pos[1])//2)
+            if board.legal_moves(final_pos[0],final_pos[1],self.game.hop) == []:
                 self.game.end_turn()
             else:
                 current_pos = final_pos
-                final_pos = board.legal_moves(
-                    current_pos[0], current_pos[1], True)
-                if final_pos != []:
-                    # print("HOP in Action", current_pos, final_pos)
-                    self._action(current_pos, final_pos[0], board)
+                final_pos   = board.legal_moves(current_pos[0],current_pos[1],True)
+                if final_pos: self._action(current_pos, final_pos[0], board)
                 self.game.end_turn()
         if self.game.hop != True:
             self.game.turn = self.adversary_color
 
     def _action_on_board(self, board, current_pos, final_pos, hop=False):
-        if hop == False:
-            if board.location(final_pos[0], final_pos[1]).occupant != None and board.location(final_pos[0], final_pos[1]).occupant.color == self.game.turn:
+        if not hop:
+            if board.location(final_pos[0],final_pos[1]).occupant is not None and board.location(final_pos[0],final_pos[1]).occupant.color == self.game.turn:
                 current_pos = final_pos
-
-            elif current_pos != None and final_pos in board.legal_moves(current_pos[0], current_pos[1]):
-
-                board.move_piece(
-                    current_pos[0], current_pos[1], final_pos[0], final_pos[1])
-
-                if final_pos not in board.adjacent(current_pos[0], current_pos[1]):
-                    # print("REMOVE", current_pos, final_pos)
-                    board.remove_piece(current_pos[0] + (final_pos[0] - current_pos[0]) //
-                                       2, current_pos[1] + (final_pos[1] - current_pos[1]) // 2)
-                    hop = True
-                    current_pos = final_pos
-                    final_pos = board.legal_moves(current_pos[0], current_pos[1], True)
-                    if final_pos != []:
-                        # print("HOP in Action", current_pos, final_pos)
-                        self._action_on_board(board, current_pos, final_pos[0],hop=True)
+            elif current_pos is not None and final_pos in board.legal_moves(current_pos[0],current_pos[1]):
+                board.move_piece(current_pos[0],current_pos[1],final_pos[0],final_pos[1])
+                if final_pos not in board.adjacent(current_pos[0],current_pos[1]):
+                    board.remove_piece(current_pos[0]+(final_pos[0]-current_pos[0])//2, current_pos[1]+(final_pos[1]-current_pos[1])//2)
+                    hop = True; current_pos = final_pos
+                    final_pos = board.legal_moves(current_pos[0],current_pos[1],True)
+                    if final_pos: self._action_on_board(board, current_pos, final_pos[0], hop=True)
         else:
-            # print(current_pos, final_pos)
-            if current_pos != None and final_pos in board.legal_moves(current_pos[0], current_pos[1], hop):
-                board.move_piece(current_pos[0], current_pos[1], final_pos[0], final_pos[1])
-                board.remove_piece(current_pos[0] + (final_pos[0] - current_pos[0]) // 2, current_pos[1] + (final_pos[1] - current_pos[1]) // 2)
-
-            if board.legal_moves(final_pos[0], final_pos[1], self.game.hop) == []:
-                return
+            if current_pos is not None and final_pos in board.legal_moves(current_pos[0],current_pos[1],hop):
+                board.move_piece(current_pos[0],current_pos[1],final_pos[0],final_pos[1])
+                board.remove_piece(current_pos[0]+(final_pos[0]-current_pos[0])//2, current_pos[1]+(final_pos[1]-current_pos[1])//2)
+            if board.legal_moves(final_pos[0],final_pos[1],self.game.hop) == []: return
             else:
                 current_pos = final_pos
-                final_pos = board.legal_moves(current_pos[0], current_pos[1], True)
-                if final_pos != []:
-                    # print("HOP in Action", current_pos, final_pos)
-                    self._action_on_board(board, current_pos, final_pos[0],hop=True)
+                final_pos   = board.legal_moves(current_pos[0],current_pos[1],True)
+                if final_pos: self._action_on_board(board, current_pos, final_pos[0], hop=True)
 
     def _generate_move(self, board):
         for i in range(8):
             for j in range(8):
-                if(board.legal_moves(i, j, self.game.hop) != [] and board.location(i, j).occupant != None and board.location(i, j).occupant.color == self.game.turn):
-                    yield (i, j, board.legal_moves(i, j, self.game.hop))
+                moves = board.legal_moves(i,j,self.game.hop)
+                if moves and board.location(i,j).occupant is not None and board.location(i,j).occupant.color == self.game.turn:
+                    yield (i,j,moves)
 
     def _generate_all_possible_moves(self, board):
-        possible_moves = []
-        for i in range(8):
-            for j in range(8):
-                if(board.legal_moves(i, j, self.game.hop) != [] and board.location(i, j).occupant != None and board.location(i, j).occupant.color == self.game.turn):
-                    possible_moves.append(
-                        (i, j, board.legal_moves(i, j, self.game.hop)))
-        return possible_moves
+        return [(i,j,board.legal_moves(i,j,self.game.hop))
+                for i in range(8) for j in range(8)
+                if board.legal_moves(i,j,self.game.hop) and board.location(i,j).occupant is not None and board.location(i,j).occupant.color == self.game.turn]
 
     def _random_step(self, board):
-        possible_moves = self._generate_all_possible_moves(board)
-        if possible_moves == []:
-            self.game.end_turn()
-            return
-        random_move = random.choice(possible_moves)
-        rand_choice = random.choice(random_move[2])
-        self._action(random_move, rand_choice, board)
-        return
+        pm = self._generate_all_possible_moves(board)
+        if not pm: self.game.end_turn(); return
+        m = random.choice(pm); self._action(m, random.choice(m[2]), board)
 
     def _minmax_step(self, board):
-        random_move, random_choice, _ = self._minmax(
-            self.depth - 1, board, 'max')
-        self._action(random_move, random_choice, board)
-        return
+        p,a,_ = self._minmax(self.depth-1, board, 'max'); self._action(p,a,board)
 
     def _alpha_beta_step(self, board):
-        random_move, random_choice, _ = self._alpha_beta(self.depth - 1, board, 'max', alpha=-float('inf'), beta=float('inf'))
-        # print(self.eval_color, self.game.turn, self.game.hop)
-        self._action(random_move, random_choice, board)
-        # print(self.eval_color, self.game.turn, self.game.hop)
-        return
+        p,a,_ = self._alpha_beta(self.depth-1, board, 'max', -float('inf'), float('inf')); self._action(p,a,board)
 
     def _minmax(self, depth, board, fn):
         if depth == 0:
             if fn == 'max':
-                max_value = -float("inf")
-                best_pos = None
-                best_action = None
+                bv,bp,ba = -float('inf'),None,None
                 for pos in self._generate_move(board):
-                    for action in pos[2]:
-                        board_clone = deepcopy(board)
-                        self.color, self.adversary_color = self.adversary_color, self.color
-                        self.game.turn = self.color
-                        self._action_on_board(board_clone, pos, action)
-                        self._count_nodes += 1
-                        step_value = self._current_eval(board_clone)
-                        self.color, self.adversary_color = self.adversary_color, self.color
-                        self.game.turn = self.color
-
-                        if step_value > max_value:
-                            max_value = step_value
-                            best_pos = pos
-                            best_action = (action[0], action[1])
-                        elif step_value == max_value and random.random() <= 0.5:
-                            max_value = step_value
-                            best_pos = (pos[0], pos[1])
-                            best_action = (action[0], action[1])
-                        if(step_value == -float("inf") and best_pos is  None):
-                            best_pos = (pos[0], pos[1])
-                            best_action = (action[0], action[1])
-                return best_pos, best_action, max_value
+                    for act in pos[2]:
+                        bc=deepcopy(board); self.color,self.adversary_color=self.adversary_color,self.color; self.game.turn=self.color
+                        self._action_on_board(bc,pos,act); self._count_nodes+=1; v=self._current_eval(bc)
+                        self.color,self.adversary_color=self.adversary_color,self.color; self.game.turn=self.color
+                        if v>bv or (v==bv and random.random()<=0.5): bv,bp,ba=v,pos,(act[0],act[1])
+                        if v==-float('inf') and bp is None: bp,ba=(pos[0],pos[1]),(act[0],act[1])
+                return bp,ba,bv
             else:
-                min_value = float("inf")
-                best_pos = None
-                best_action = None
+                bv,bp,ba = float('inf'),None,None
                 for pos in self._generate_move(board):
-                    for action in pos[2]:
-                        board_clone = deepcopy(board)
-                        self.color, self.adversary_color = self.adversary_color, self.color
-                        self.game.turn = self.color
-                        self._count_nodes += 1
-                        self._action_on_board(board_clone, pos, action)
-                        step_value = self._current_eval(board_clone)
-                        self.color, self.adversary_color = self.adversary_color, self.color
-                        self.game.turn = self.color
-                        if step_value < min_value:
-                            min_value = step_value
-                            best_pos = pos
-                            best_action = action
-                        elif step_value == min_value and random.random() <= 0.5:
-                            min_value = step_value
-                            best_pos = pos
-                            best_action = action
-                        if(step_value == float("inf") and best_pos is  None):
-                            best_pos = (pos[0], pos[1])
-                            best_action = (action[0], action[1])
-                return best_pos, best_action, min_value
+                    for act in pos[2]:
+                        bc=deepcopy(board); self.color,self.adversary_color=self.adversary_color,self.color; self.game.turn=self.color
+                        self._count_nodes+=1; self._action_on_board(bc,pos,act); v=self._current_eval(bc)
+                        self.color,self.adversary_color=self.adversary_color,self.color; self.game.turn=self.color
+                        if v<bv or (v==bv and random.random()<=0.5): bv,bp,ba=v,pos,act
+                        if v==float('inf') and bp is None: bp,ba=(pos[0],pos[1]),(act[0],act[1])
+                return bp,ba,bv
         else:
             if fn == 'max':
-                max_value = -float("inf")
-                best_pos = None
-                best_action = None
+                bv,bp,ba = -float('inf'),None,None
                 for pos in self._generate_move(board):
-                    for action in pos[2]:
-                        board_clone = deepcopy(board)
-                        self.color, self.adversary_color = self.adversary_color, self.color
-                        self.game.turn = self.color
-                        self._action_on_board(board_clone, pos, action)
-                        self._count_nodes += 1
-                        if self._check_for_endgame(board_clone):
-                            step_value = float("inf")
-                        else:
-                            _, _, step_value = self._minmax(depth - 1, board_clone, 'min')
-                        self.color, self.adversary_color = self.adversary_color, self.color
-                        self.game.turn = self.color
-                        # print('POS', (pos[0], pos[1]), 'ACK', action, 'MAX', depth, step_value)
-                        if(step_value is None):
-                            continue
-                        # print('max->', depth, step_value, (pos[0], pos[1]), action, self.color)
-                        if step_value > max_value:
-                            max_value = step_value
-                            best_pos = pos
-                            best_action = action
-                        elif step_value == max_value and random.random() <= 0.5:
-                            max_value = step_value
-                            best_pos = pos
-                            best_action = action
-                        if(step_value == -float("inf") and best_pos is  None):
-                            best_pos = (pos[0], pos[1])
-                            best_action = (action[0], action[1])
-                return best_pos, best_action, max_value
+                    for act in pos[2]:
+                        bc=deepcopy(board); self.color,self.adversary_color=self.adversary_color,self.color; self.game.turn=self.color
+                        self._action_on_board(bc,pos,act); self._count_nodes+=1
+                        v = float('inf') if self._check_for_endgame(bc) else self._minmax(depth-1,bc,'min')[2]
+                        self.color,self.adversary_color=self.adversary_color,self.color; self.game.turn=self.color
+                        if v is None: continue
+                        if v>bv or (v==bv and random.random()<=0.5): bv,bp,ba=v,pos,act
+                        if v==-float('inf') and bp is None: bp,ba=(pos[0],pos[1]),(act[0],act[1])
+                return bp,ba,bv
             else:
-                min_value = float("inf")
-                best_pos = None
-                best_action = None
+                bv,bp,ba = float('inf'),None,None
                 for pos in self._generate_move(board):
-                    for action in pos[2]:
-                        board_clone = deepcopy(board)
-                        # print('POS', (pos[0], pos[1]), 'ACK', action, 'MIN', depth)
-                        self.color, self.adversary_color = self.adversary_color, self.color
-                        self.game.turn = self.color
-                        self._count_nodes += 1
-                        self._action_on_board(board_clone, pos, action)
-                        if self._check_for_endgame(board_clone):
-                            step_value = -float("inf")
-                        else:
-                            _, _, step_value = self._minmax( depth - 1, board_clone, 'max')
-                        self.color, self.adversary_color = self.adversary_color, self.color
-                        self.game.turn = self.color
-                        if(step_value is None):
-                            continue
-                        if step_value < min_value:
-                            min_value = step_value
-                            best_pos = (pos[0], pos[1])
-                            best_action = (action[0], action[1])
-                        elif step_value == min_value and random.random() <= 0.5:
-                            min_value = step_value
-                            best_pos = pos
-                            best_action = action
-                        if(step_value == float("inf") and best_pos is  None):
-                            best_pos = (pos[0], pos[1])
-                            best_action = (action[0], action[1])
-                return best_pos, best_action, min_value
+                    for act in pos[2]:
+                        bc=deepcopy(board); self.color,self.adversary_color=self.adversary_color,self.color; self.game.turn=self.color
+                        self._count_nodes+=1; self._action_on_board(bc,pos,act)
+                        v = -float('inf') if self._check_for_endgame(bc) else self._minmax(depth-1,bc,'max')[2]
+                        self.color,self.adversary_color=self.adversary_color,self.color; self.game.turn=self.color
+                        if v is None: continue
+                        if v<bv or (v==bv and random.random()<=0.5): bv,bp,ba=v,(pos[0],pos[1]),(act[0],act[1])
+                        if v==float('inf') and bp is None: bp,ba=(pos[0],pos[1]),(act[0],act[1])
+                return bp,ba,bv
 
     def _alpha_beta(self, depth, board, fn, alpha, beta):
         if depth == 0:
             if fn == 'max':
-                max_value = -float("inf")
-                best_pos = None
-                best_action = None
+                bv,bp,ba = -float('inf'),None,None
                 for pos in self._generate_move(board):
-                    for action in pos[2]:
-                        board_clone = deepcopy(board)
-                        self.color, self.adversary_color = self.adversary_color, self.color
-                        self.game.turn = self.color
-                        self._count_nodes += 1
-                        self._action_on_board(board_clone, pos, action)
-                        step_value = self._current_eval(board_clone)
-                        self.color, self.adversary_color = self.adversary_color, self.color
-                        self.game.turn = self.color
-                        # print('max->', depth, step_value, (pos[0], pos[1]), action, self.color)
-                        if step_value > max_value:
-                            max_value = step_value
-                            best_pos = pos
-                            best_action = (action[0], action[1])
-                        elif step_value == max_value and random.random() <= 0.5:
-                            max_value = step_value
-                            best_pos = (pos[0], pos[1])
-                            best_action = (action[0], action[1])
-                        if(step_value == -float("inf") and best_pos is  None):
-                            best_pos = (pos[0], pos[1])
-                            best_action = (action[0], action[1])
-                        alpha = max(alpha, max_value)
-                        if beta < alpha:
-                            # print('beta cutoff')
-                            break
-                    if beta < alpha:
-                        # print('beta cutoff')
-                        break
-                return best_pos, best_action, max_value
+                    for act in pos[2]:
+                        bc=deepcopy(board); self.color,self.adversary_color=self.adversary_color,self.color; self.game.turn=self.color
+                        self._count_nodes+=1; self._action_on_board(bc,pos,act); v=self._current_eval(bc)
+                        self.color,self.adversary_color=self.adversary_color,self.color; self.game.turn=self.color
+                        if v>bv or (v==bv and random.random()<=0.5): bv,bp,ba=v,pos,(act[0],act[1])
+                        if v==-float('inf') and bp is None: bp,ba=(pos[0],pos[1]),(act[0],act[1])
+                        alpha=max(alpha,bv)
+                        if beta<alpha: break
+                    if beta<alpha: break
+                return bp,ba,bv
             else:
-                min_value = float("inf")
-                best_pos = None
-                best_action = None
+                bv,bp,ba = float('inf'),None,None
                 for pos in self._generate_move(board):
-                    for action in pos[2]:
-                        board_clone = deepcopy(board)
-                        self.color, self.adversary_color = self.adversary_color, self.color
-                        self.game.turn = self.color
-                        self._action_on_board(board_clone, pos, action)
-                        self._count_nodes += 1
-                        step_value = self._current_eval(board_clone)
-                        self.color, self.adversary_color = self.adversary_color, self.color
-                        self.game.turn = self.color
-                        # print('min->', depth, step_value, (pos[0], pos[1]), action, self.color)
-                        if step_value < min_value:
-                            min_value = step_value
-                            best_pos = pos
-                            best_action = action
-                        elif step_value == min_value and random.random() <= 0.5:
-                            min_value = step_value
-                            best_pos = pos
-                            best_action = action
-                        if(step_value == float("inf") and best_pos is  None):
-                            best_pos = (pos[0], pos[1])
-                            best_action = (action[0], action[1])
-                        beta = min(beta, min_value)
-                        if beta < alpha:
-                            # print('alpha cutoff')
-                            break
-                    if beta < alpha:
-                        # print('alpha cutoff')
-                        break
-                return best_pos, best_action, min_value
+                    for act in pos[2]:
+                        bc=deepcopy(board); self.color,self.adversary_color=self.adversary_color,self.color; self.game.turn=self.color
+                        self._action_on_board(bc,pos,act); self._count_nodes+=1; v=self._current_eval(bc)
+                        self.color,self.adversary_color=self.adversary_color,self.color; self.game.turn=self.color
+                        if v<bv or (v==bv and random.random()<=0.5): bv,bp,ba=v,pos,act
+                        if v==float('inf') and bp is None: bp,ba=(pos[0],pos[1]),(act[0],act[1])
+                        beta=min(beta,bv)
+                        if beta<alpha: break
+                    if beta<alpha: break
+                return bp,ba,bv
         else:
             if fn == 'max':
-                max_value = -float("inf")
-                best_pos = None
-                best_action = None
+                bv,bp,ba = -float('inf'),None,None
                 for pos in self._generate_move(board):
-                    for action in pos[2]:
-                        board_clone = deepcopy(board)
-                        self.color, self.adversary_color = self.adversary_color, self.color
-                        self.game.turn = self.color
-                        self._action_on_board(board_clone, pos, action)
-                        self._count_nodes += 1
-                        if self._check_for_endgame(board_clone):
-                            step_value = float("inf")
-                        else:
-                            _, _, step_value = self._alpha_beta(depth - 1, board_clone, 'min', alpha, beta)
-                        self.color, self.adversary_color = self.adversary_color, self.color
-                        self.game.turn = self.color
-                        # print('POS', (pos[0], pos[1]), 'ACK', action, 'MAX', depth, step_value)
-                        if(step_value is None):
-                            continue
-                        # print('max->', depth, step_value, (pos[0], pos[1]), action, self.color)
-                        if step_value > max_value:
-                            max_value = step_value
-                            best_pos = pos
-                            best_action = action
-                        elif step_value == max_value and random.random() <= 0.5:
-                            max_value = step_value
-                            best_pos = pos
-                            best_action = action
-                        if(step_value == -float("inf") and best_pos is  None):
-                            best_pos = (pos[0], pos[1])
-                            best_action = (action[0], action[1])
-                        alpha = max(alpha, max_value)
-                        if beta <= alpha:
-                            # print('beta cutoff')
-                            break
-                    if beta < alpha:
-                        # print('alpha cu3toff')
-                        break
-                return best_pos, best_action, max_value
+                    for act in pos[2]:
+                        bc=deepcopy(board); self.color,self.adversary_color=self.adversary_color,self.color; self.game.turn=self.color
+                        self._action_on_board(bc,pos,act); self._count_nodes+=1
+                        if self._check_for_endgame(bc): v=float('inf')
+                        else: _,_,v=self._alpha_beta(depth-1,bc,'min',alpha,beta)
+                        self.color,self.adversary_color=self.adversary_color,self.color; self.game.turn=self.color
+                        if v is None: continue
+                        if v>bv or (v==bv and random.random()<=0.5): bv,bp,ba=v,pos,act
+                        if v==-float('inf') and bp is None: bp,ba=(pos[0],pos[1]),(act[0],act[1])
+                        alpha=max(alpha,bv)
+                        if beta<=alpha: break
+                    if beta<alpha: break
+                return bp,ba,bv
             else:
-                min_value = float("inf")
-                best_pos = None
-                best_action = None
+                bv,bp,ba = float('inf'),None,None
                 for pos in self._generate_move(board):
-                    for action in pos[2]:
-                        board_clone = deepcopy(board)
-                        # print('POS', (pos[0], pos[1]), 'ACK', action, 'MIN', depth)
-                        self.color, self.adversary_color = self.adversary_color, self.color
-                        self.game.turn = self.color
-                        self._count_nodes += 1
-                        self._action_on_board(board_clone, pos, action)
-                        if self._check_for_endgame(board_clone):
-                            step_value = -float("inf")
-                        else:
-                            _, _, step_value = self._alpha_beta( depth - 1, board_clone, 'max', alpha, beta)
-                        self.color, self.adversary_color = self.adversary_color, self.color
-                        self.game.turn = self.color
-                        if(step_value is None):
-                            continue
-                        if step_value < min_value:
-                            min_value = step_value
-                            best_pos = (pos[0], pos[1])
-                            best_action = (action[0], action[1])
-                        elif step_value == min_value and random.random() <= 0.5:
-                            min_value = step_value
-                            best_pos = pos
-                            best_action = action
-                        # print('min->', depth, step_value, (pos[0], pos[1]), action, self.color)
-                        if(step_value == float("inf") and best_pos is  None):
-                            best_pos = (pos[0], pos[1])
-                            best_action = (action[0], action[1])
-                        beta = min(beta, min_value)
-                        if beta < alpha:
-                            # print('alpha cutoff')
-                            break
-                    if beta < alpha:
-                        # print('alpha cutoff')
-                        break
-                return best_pos, best_action, min_value
+                    for act in pos[2]:
+                        bc=deepcopy(board); self.color,self.adversary_color=self.adversary_color,self.color; self.game.turn=self.color
+                        self._count_nodes+=1; self._action_on_board(bc,pos,act)
+                        if self._check_for_endgame(bc): v=-float('inf')
+                        else: _,_,v=self._alpha_beta(depth-1,bc,'max',alpha,beta)
+                        self.color,self.adversary_color=self.adversary_color,self.color; self.game.turn=self.color
+                        if v is None: continue
+                        if v<bv or (v==bv and random.random()<=0.5): bv,bp,ba=v,(pos[0],pos[1]),(act[0],act[1])
+                        if v==float('inf') and bp is None: bp,ba=(pos[0],pos[1]),(act[0],act[1])
+                        beta=min(beta,bv)
+                        if beta<alpha: break
+                    if beta<alpha: break
+                return bp,ba,bv
 
-    def _piece2val(self, board):
+    def _mobility(self, board):
+        my_moves = sum(len(board.legal_moves(i,j)) for i in range(8) for j in range(8)
+                       if board.location(i,j).occupant is not None and board.location(i,j).occupant.color == self.eval_color)
+        opp_moves= sum(len(board.legal_moves(i,j)) for i in range(8) for j in range(8)
+                       if board.location(i,j).occupant is not None and board.location(i,j).occupant.color != self.eval_color)
+        return my_moves - opp_moves
+
+    def _center_bonus(self, board):
         score = 0
         for i in range(8):
             for j in range(8):
-                occupant = board.location(i, j).occupant
-                if(occupant is not None):
-                    if(occupant.color == self.eval_color):
-                        score += occupant.value
-                    else:
-                        score -= occupant.value
+                occ = board.location(i,j).occupant
+                if occ is None: continue
+                mult = 1 if occ.color == self.eval_color else -1
+                if (i,j) in CENTER_SQUARES:    score += 2 * mult
+                elif (i,j) in NEAR_CENTER:     score += 1 * mult
         return score
+
+    def _piece2val(self, board):
+        return sum((occ.value if occ.color==self.eval_color else -occ.value)
+                   for i in range(8) for j in range(8)
+                   for occ in [board.location(i,j).occupant] if occ is not None)
 
     def _piece_and_row2val(self, board):
         score = 0
-        if(self.eval_color == RED):
-            for i in range(8):
-                for j in range(8):
-                    occupant = board.location(i, j).occupant
-                    if(occupant is not None):
-                        if occupant.color == self.eval_color:
-                            score += 5 + j + 2 * (occupant.king)
-                        else:
-                            score -= 5 + (8 - j) + 2 * (occupant.king)
-        else:
-            for i in range(8):
-                for j in range(8):
-                    occupant = board.location(i, j).occupant
-                    if(occupant is not None):
-                        if occupant.color == self.eval_color:
-                            score += 5 + (8 - j) + 2 * (occupant.king)
-                        else:
-                            score -= 5 + j + 2 * (occupant.king)
+        for i in range(8):
+            for j in range(8):
+                occ = board.location(i,j).occupant
+                if occ is None: continue
+                if self.eval_color == RED:
+                    score += (5+j+2*occ.king) if occ.color==self.eval_color else -(5+(8-j)+2*occ.king)
+                else:
+                    score += (5+(8-j)+2*occ.king) if occ.color==self.eval_color else -(5+j+2*occ.king)
         return score
 
     def _piece_and_board2val(self, board):
         score = 0
-        if(self.eval_color == RED):
-            for i in range(8):
-                for j in range(8):
-                    occupant = board.location(i, j).occupant
-                    if(occupant is not None):
-                        if occupant.color == self.eval_color and occupant.king:
-                            score += 10
-                        elif occupant.color != self.eval_color and occupant.king:
-                            score -= 10
-                        elif occupant.color == self.eval_color and j < 4:
-                            score += 5
-                        elif occupant.color != self.eval_color and j < 4:
-                            score -= 7
-                        elif occupant.color == self.eval_color and j >= 4:
-                            score += 7
-                        elif occupant.color != self.eval_color and j >= 4:
-                            score -= 5
-        else:
-            for i in range(8):
-                for j in range(8):
-                    occupant = board.location(i, j).occupant
-                    if(occupant is not None):
-                        if occupant.color == self.eval_color and occupant.king:
-                            score += 10
-                        elif occupant.color != self.eval_color and occupant.king:
-                            score -= 10
-                        elif occupant.color == self.eval_color and j < 4:
-                            score += 7
-                        elif occupant.color != self.eval_color and j < 4:
-                            score -= 5
-                        elif occupant.color == self.eval_color and j >= 4:
-                            score += 7
-                        elif occupant.color != self.eval_color and j >= 4:
-                            score -= 5
+        for i in range(8):
+            for j in range(8):
+                occ = board.location(i,j).occupant
+                if occ is None: continue
+                mine = occ.color == self.eval_color
+                if occ.king:     score += 10 if mine else -10
+                elif self.eval_color == RED:
+                    score += (5 if j<4 else 7) if mine else -(7 if j<4 else 5)
+                else:
+                    score += (7 if j<4 else 7) if mine else -(5 if j<4 else 5)
+        score += self._mobility(board) * 0.5
+        score += self._center_bonus(board)
         return score
 
     def _piece_and_board_pov2val(self, board):
-        score = 0
-        num_pieces = 0
-        if(self.eval_color == RED):
-            for i in range(8):
-                for j in range(8):
-                    occupant = board.location(i, j).occupant
-                    if(occupant is not None):
-                        num_pieces += 1
-                        if occupant.color == self.eval_color and occupant.king:
-                            score += 10
-                        elif occupant.color != self.eval_color and occupant.king:
-                            score -= 10
-                        elif occupant.color == self.eval_color and j < 4:
-                            score += 5
-                        elif occupant.color != self.eval_color and j < 4:
-                            score -= 7
-                        elif occupant.color == self.eval_color and j >= 4:
-                            score += 7
-                        elif occupant.color != self.eval_color and j >= 4:
-                            score -= 5
-        else:
-            for i in range(8):
-                for j in range(8):
-                    occupant = board.location(i, j).occupant
-                    if(occupant is not None):
-                        num_pieces += 1
-                        if occupant.color == self.eval_color and occupant.king:
-                            score += 10
-                        elif occupant.color != self.eval_color and occupant.king:
-                            score -= 10
-                        elif occupant.color == self.eval_color and j < 4:
-                            score += 7
-                        elif occupant.color != self.eval_color and j < 4:
-                            score -= 5
-                        elif occupant.color == self.eval_color and j >= 4:
-                            score += 7
-                        elif occupant.color != self.eval_color and j >= 4:
-                            score -= 5
-        return score / num_pieces
-
-    def _all_kings(self, board):
+        score, n = 0, 0
         for i in range(8):
             for j in range(8):
-                occupant = board.location(i, j).occupant
-                if(occupant is not None and occupant.king == False):
-                    return False
-        return True
+                occ = board.location(i,j).occupant
+                if occ is None: continue
+                n += 1
+                mine = occ.color == self.eval_color
+                if occ.king:     score += 10 if mine else -10
+                elif self.eval_color == RED:
+                    score += (5 if j<4 else 7) if mine else -(7 if j<4 else 5)
+                else:
+                    score += (7 if j<4 else 7) if mine else -(5 if j<4 else 5)
+        score += self._center_bonus(board)
+        return score / max(n,1)
 
-    def _dist(self, x1, y1, x2, y2):
-        return math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
+    def _dist(self, x1, y1, x2, y2): return math.sqrt((x1-x2)**2+(y1-y2)**2)
 
     def _pieces_loc(self, board):
-        player_pieces = []
-        adversary_pieces = []
+        pl,ad=[],[]
         for i in range(8):
             for j in range(8):
-                occupant = board.location(i, j).occupant
-                if(occupant is not None):
-                    if(occupant.color == self.eval_color):
-                        player_pieces.append((i, j))
-                    else:
-                        adversary_pieces.append((i, j))
-        return player_pieces, adversary_pieces
+                occ=board.location(i,j).occupant
+                if occ: (pl if occ.color==self.eval_color else ad).append((i,j))
+        return pl,ad
 
     def _sum_of_dist(self, board):
-        player_pieces, adversary_pieces = self._pieces_loc(board)
-        sum_of_dist = 0
-        for pos in player_pieces:
-            for adv in adversary_pieces:
-                sum_of_dist += self._dist(pos[0], pos[1], adv[0], adv[1])
-        if(len(player_pieces) >= len(adversary_pieces)):
-            sum_of_dist *= -1
-        return sum_of_dist
+        pl,ad=self._pieces_loc(board)
+        d=sum(self._dist(p[0],p[1],a[0],a[1]) for p in pl for a in ad)
+        return -d if len(pl)>=len(ad) else d
 
     def _farthest_piece(self, board):
-        player_pieces, adversary_pieces = self._pieces_loc(board)
-        farthest_dist = 0
-        for pos in player_pieces:
-            for adv in adversary_pieces:
-                farthest_dist += max(farthest_dist, self._dist(pos[0], pos[1], adv[0], adv[1]))
-        if(len(player_pieces) >= len(adversary_pieces)):
-            farthest_dist *= -1
-        return farthest_dist
+        pl,ad=self._pieces_loc(board); d=0
+        for p in pl:
+            for a in ad: d=max(d,self._dist(p[0],p[1],a[0],a[1]))
+        return -d if len(pl)>=len(ad) else d
 
     def _check_for_endgame(self, board):
         for x in range(8):
             for y in range(8):
-                if board.location(x, y).color == BLACK and board.location(x, y).occupant != None and board.location(x, y).occupant.color == self.game.turn:
-                    if board.legal_moves(x, y) != []:
-                        return False
+                if (board.location(x,y).color==BLACK and board.location(x,y).occupant is not None
+                        and board.location(x,y).occupant.color==self.game.turn):
+                    if board.legal_moves(x,y)!=[]: return False
         return True
