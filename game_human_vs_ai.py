@@ -39,13 +39,11 @@ def _draw_piece(surface, color, cx, cy, r, king=False, selected=False, pulse=0.0
 
 def _draw_board(surface, game, bx, by, board_size, pulse):
     sq=board_size//8
-    # Draw squares
     for row in range(8):
         for col in range(8):
             c=(200,160,110) if (row+col)%2==0 else (80,50,28)
             pygame.draw.rect(surface,c,(bx+col*sq,by+row*sq,sq,sq))
 
-    # Selected piece glow (drawn before pieces, on top of squares)
     if game.selected_piece is not None:
         sp=game.selected_piece
         glow_cx=bx+sp[0]*sq+sq//2; glow_cy=by+sp[1]*sq+sq//2
@@ -55,14 +53,11 @@ def _draw_board(surface, game, bx, by, board_size, pulse):
         pygame.draw.circle(gs,(*ACCENT_GOLD,glow_a),(glow_r+5,glow_r+5),glow_r,4)
         surface.blit(gs,(glow_cx-glow_r-5,glow_cy-glow_r-5))
 
-        # Legal move dots
         for mv in game.board.legal_moves(sp[0],sp[1],game.hop):
-            dot_cx=bx+mv[0]*sq+sq//2; dot_cy=by+mv[1]*sq+sq//2
             dot_s=pygame.Surface((sq,sq),pygame.SRCALPHA)
             pygame.draw.circle(dot_s,(*ACCENT_BLUE,180),(sq//2,sq//2),max(6,sq//5))
             surface.blit(dot_s,(bx+mv[0]*sq,by+mv[1]*sq))
 
-    # Pieces
     r=max(8,sq//2-4)
     for row in range(8):
         for col in range(8):
@@ -112,14 +107,18 @@ def _count_pieces(board):
     return blue,red
 
 
-def _draw_piece_bar(surface,x,y,w,h,count,max_count,color,fonts):
+def _draw_piece_bar(surface,x,y,w,h,count,max_count,color,label_font,label_col):
     pygame.draw.rect(surface,(30,30,50),(x,y,w,h),border_radius=4)
     fw=int(w*count/max(max_count,1))
     if fw>0: pygame.draw.rect(surface,color,(x,y,fw,h),border_radius=4)
     pygame.draw.rect(surface,BORDER,(x,y,w,h),1,border_radius=4)
-    lc=ACCENT_BLUE if color==PIECE_BLUE else ACCENT_RED
-    t=fonts['small'].render(f"{count}/{max_count}",True,lc)
-    surface.blit(t,(x+w+8,y+(h-t.get_height())//2))
+    t=label_font.render(f"{count}/{max_count}",True,label_col)
+    surface.blit(t,(x+w+6,y+(h-t.get_height())//2))
+
+
+def _draw_sidebar_line(surface, px, py, panel_w, pad):
+    """Draw a separator line within the sidebar."""
+    pygame.draw.line(surface, BORDER, (px, py), (px + panel_w - pad*2, py))
 
 
 def run_human_vs_ai(depth):
@@ -132,23 +131,47 @@ def run_human_vs_ai(depth):
 
     scale=min(SW/1280,SH/720)
     sz=lambda n: max(10,int(n*scale))
+
+    # ── Fonts: three clear sizes ──
     try:
-        font_xl=pygame.font.SysFont('couriernew',sz(26),bold=True)
-        font_lg=pygame.font.SysFont('couriernew',sz(18),bold=True)
-        font_sm=pygame.font.SysFont('couriernew',sz(13))
+        font_hd = pygame.font.SysFont('couriernew', sz(20), bold=True)   # section headers
+        font_bd = pygame.font.SysFont('couriernew', sz(14), bold=True)   # bold labels
+        font_nm = pygame.font.SysFont('couriernew', sz(13))              # normal text
+        font_sm = pygame.font.SysFont('couriernew', sz(12))              # small text
     except:
-        font_xl=pygame.font.Font(None,sz(32)); font_lg=pygame.font.Font(None,sz(22))
-        font_sm=pygame.font.Font(None,sz(17))
-    fonts={'xl':font_xl,'lg':font_lg,'sm':font_sm,'small':font_sm}
+        font_hd = pygame.font.Font(None, sz(26))
+        font_bd = pygame.font.Font(None, sz(20))
+        font_nm = pygame.font.Font(None, sz(18))
+        font_sm = pygame.font.Font(None, sz(16))
 
     diff_names={1:'EASY',2:'MEDIUM',3:'HARD',5:'EXPERT'}
     diff_label=diff_names.get(depth,f'DEPTH {depth}')
+    diff_colors={1:ACCENT_BLUE,2:ACCENT_BLUE,3:ACCENT_GOLD,5:ACCENT_RED}
+    diff_col = diff_colors.get(depth, ACCENT_BLUE)
 
-    BOARD_SIZE=min(int(SW*0.64),int(SH*0.90)); BOARD_SIZE=(BOARD_SIZE//8)*8
-    BX=int(SW*0.02); BY=(SH-BOARD_SIZE)//2
-    PANEL_X=BX+BOARD_SIZE+int(SW*0.02)
-    PANEL_W=SW-PANEL_X-int(SW*0.01)
-    PAD=max(16,int(PANEL_W*0.06))
+    # ── Layout ──
+    # Board: 68% of width, vertically centered
+    BOARD_SIZE = min(int(SW*0.64), int(SH*0.88))
+    BOARD_SIZE = (BOARD_SIZE//8)*8
+    BX = int(SW*0.02)
+    BY = (SH - BOARD_SIZE)//2
+
+    # Sidebar: remaining width
+    PANEL_X = BX + BOARD_SIZE + int(SW*0.015)
+    PANEL_W = SW - PANEL_X - int(SW*0.008)
+    PAD = max(12, int(PANEL_W*0.05))
+
+    # Button area at bottom of sidebar — fixed height from bottom
+    BTN_H   = max(32, int(SH*0.044))
+    BTN_W   = PANEL_W - PAD*2
+    BTN_GAP = 8
+    # Two buttons stacked at very bottom
+    back_rect    = pygame.Rect(PANEL_X+PAD, SH-BTN_H-10,           BTN_W, BTN_H)
+    restart_rect = pygame.Rect(PANEL_X+PAD, SH-BTN_H*2-BTN_GAP-10, BTN_W, BTN_H)
+    # Safe scrollable content ends above restart button
+    CONTENT_MAX_Y = restart_rect.top - 10
+
+    INIT_PIECES=12
 
     def make_game():
         g=checkers.Game(loop_mode=True,skip_graphics=True)
@@ -158,20 +181,27 @@ def run_human_vs_ai(depth):
     game,bot=make_game()
     nodes_explored=0; move_count=0; winner=None; game_over=False
     status_msg="YOUR TURN — Click a piece"
-    ai_flash_timer=0.0; INIT_PIECES=12; pulse=0.0
+    ai_flash_timer=0.0; pulse=0.0
 
-    btn_h=max(34,int(SH*0.048)); btn_w=PANEL_W-2*PAD
-    back_rect   =pygame.Rect(PANEL_X+PAD,SH-btn_h-12,btn_w,btn_h)
-    restart_rect=pygame.Rect(PANEL_X+PAD,SH-btn_h*2-24,btn_w,btn_h)
-
-    # Fade state
     intro_alpha=255.0
     exiting=False; exit_timer=0.0
     fade_surf=pygame.Surface((SW,SH)); fade_surf.fill((0,0,0))
 
+    def draw_row(label, value, y, lf=font_nm, vf=font_nm, lc=TEXT_DIM, vc=TEXT_WHITE):
+        """Draw a label:value pair, clipping to CONTENT_MAX_Y."""
+        if y >= CONTENT_MAX_Y: return y
+        lt = lf.render(label, True, lc)
+        screen.blit(lt, (PANEL_X+PAD, y))
+        vt = vf.render(value, True, vc)
+        # right-align value if it fits, else put on same line after label
+        vx = min(PANEL_X+PAD+lt.get_width()+6, PANEL_X+PANEL_W-PAD-vt.get_width())
+        screen.blit(vt, (vx, y))
+        return y + max(lt.get_height(), vt.get_height()) + 3
+
     while True:
         dt=clock.tick(60)/1000.0
-        pulse+=dt*3.0; mp=pygame.mouse.get_pos()
+        pulse+=dt*3.0
+        mp=pygame.mouse.get_pos()
         ai_flash_timer=max(0,ai_flash_timer-dt)
 
         for event in pygame.event.get():
@@ -187,100 +217,175 @@ def run_human_vs_ai(depth):
                     winner=None; game_over=False; status_msg="YOUR TURN — Click a piece"
 
         if not game_over and game.turn==RED and not exiting:
-            # Show thinking frame first
+            # Show thinking frame
             screen.fill(BG_DARK)
             _draw_board(screen,game,BX,BY,BOARD_SIZE,pulse)
             pygame.draw.rect(screen,ACCENT_GOLD,(BX-3,BY-3,BOARD_SIZE+6,BOARD_SIZE+6),2,border_radius=4)
-            # Sidebar
             pygame.draw.rect(screen,PANEL_BG,(PANEL_X,0,PANEL_W,SH))
             pygame.draw.line(screen,BORDER,(PANEL_X,0),(PANEL_X,SH),2)
-            think_t=font_lg.render("AI THINKING...",True,ACCENT_RED)
-            screen.blit(think_t,(PANEL_X+PAD,SH//2-20))
+            think_t=font_hd.render("AI THINKING...",True,ACCENT_RED)
+            screen.blit(think_t,(PANEL_X+PAD, SH//2-think_t.get_height()//2))
             pygame.display.flip()
 
-            status_msg="AI THINKING..."
             nodes_explored=bot.step(game.board,True) or 0
             move_count+=1
-            status_msg=f"AI moved  |  Nodes: {nodes_explored}"
+            status_msg=f"AI moved | Nodes: {nodes_explored}"
             ai_flash_timer=0.4
 
         if not game_over and game.endit:
             game_over=True
             winner="YOU (BLUE)" if game.turn==RED else "AI (RED)"
 
-        # ── Draw ──
+        # ── Draw board ──
         screen.fill(BG_DARK)
 
         if ai_flash_timer>0:
             a=int(180*(ai_flash_timer/0.4))
-            fs=pygame.Surface((BOARD_SIZE,BOARD_SIZE),pygame.SRCALPHA); fs.fill((50,220,120,a))
+            fs=pygame.Surface((BOARD_SIZE,BOARD_SIZE),pygame.SRCALPHA)
+            fs.fill((50,220,120,a))
             screen.blit(fs,(BX,BY))
 
         _draw_board(screen,game,BX,BY,BOARD_SIZE,pulse)
         pygame.draw.rect(screen,ACCENT_GOLD,(BX-3,BY-3,BOARD_SIZE+6,BOARD_SIZE+6),2,border_radius=4)
 
-        # Sidebar
+        # ── Sidebar background ──
         pygame.draw.rect(screen,PANEL_BG,(PANEL_X,0,PANEL_W,SH))
         pygame.draw.line(screen,BORDER,(PANEL_X,0),(PANEL_X,SH),2)
-        px,py=PANEL_X+PAD,20
 
-        screen.blit(font_lg.render("CHECKERS AI",True,ACCENT_BLUE),(px,py)); py+=font_lg.get_height()+6
-        dc=ACCENT_GOLD if diff_label in ('HARD','EXPERT') else ACCENT_BLUE
-        screen.blit(font_sm.render(f"[ {diff_label} ]",True,dc),(px,py)); py+=22
-        pygame.draw.line(screen,BORDER,(px,py),(px+PANEL_W-PAD*2,py)); py+=14
+        # ── Sidebar content — all drawn top-to-bottom with py tracking ──
+        px = PANEL_X + PAD
+        py = 16
+        line_w = PANEL_W - PAD*2
 
-        tc=ACCENT_BLUE if game.turn==BLUE else ACCENT_RED
-        tt="YOUR TURN" if game.turn==BLUE else "AI TURN"
-        if game_over: tt="GAME OVER"; tc=ACCENT_GOLD
-        screen.blit(font_lg.render(tt,True,tc),(px,py)); py+=28
-        pygame.draw.line(screen,BORDER,(px,py),(px+PANEL_W-PAD*2,py)); py+=14
+        # Title
+        if py < CONTENT_MAX_Y:
+            t=font_hd.render("CHECKERS AI", True, ACCENT_BLUE)
+            screen.blit(t,(px,py)); py+=t.get_height()+4
 
-        screen.blit(font_sm.render("STATUS:",True,TEXT_DIM),(px,py)); py+=18
-        words=status_msg.split(); line=""
-        for w in words:
-            test=line+w+" "
-            if font_sm.size(test)[0]>PANEL_W-PAD*2:
-                screen.blit(font_sm.render(line,True,TEXT_WHITE),(px,py)); py+=16; line=w+" "
-            else: line=test
-        if line: screen.blit(font_sm.render(line,True,TEXT_WHITE),(px,py)); py+=22
-        pygame.draw.line(screen,BORDER,(px,py),(px+PANEL_W-PAD*2,py)); py+=14
+        # Difficulty badge
+        if py < CONTENT_MAX_Y:
+            badge=font_sm.render(f"[ {diff_label} ]", True, diff_col)
+            screen.blit(badge,(px,py)); py+=badge.get_height()+8
 
-        screen.blit(font_sm.render("STATS:",True,TEXT_DIM),(px,py)); py+=18
-        for lbl in [f"Move #: {move_count}",f"Nodes: {nodes_explored}",f"Depth: {depth}","Method: α-β Pruning"]:
-            screen.blit(font_sm.render(lbl,True,TEXT_WHITE),(px,py)); py+=16
-        py+=8
-        pygame.draw.line(screen,BORDER,(px,py),(px+PANEL_W-PAD*2,py)); py+=14
+        # Separator
+        if py < CONTENT_MAX_Y:
+            pygame.draw.line(screen,BORDER,(px,py),(px+line_w,py)); py+=10
+
+        # Turn indicator
+        if py < CONTENT_MAX_Y:
+            tc=ACCENT_BLUE if game.turn==BLUE else ACCENT_RED
+            tt="YOUR TURN" if game.turn==BLUE else "AI TURN"
+            if game_over: tt="GAME OVER"; tc=ACCENT_GOLD
+            t=font_hd.render(tt,True,tc)
+            screen.blit(t,(px,py)); py+=t.get_height()+8
+
+        # Separator
+        if py < CONTENT_MAX_Y:
+            pygame.draw.line(screen,BORDER,(px,py),(px+line_w,py)); py+=10
+
+        # Status (word-wrapped)
+        if py < CONTENT_MAX_Y:
+            lbl=font_sm.render("STATUS",True,TEXT_DIM)
+            screen.blit(lbl,(px,py)); py+=lbl.get_height()+4
+            # Word-wrap status_msg
+            words=status_msg.split(); line=""
+            for w in words:
+                test=line+w+" "
+                if font_nm.size(test)[0] > line_w:
+                    if py < CONTENT_MAX_Y:
+                        screen.blit(font_nm.render(line.strip(),True,TEXT_WHITE),(px,py))
+                        py+=font_nm.get_height()+2
+                    line=w+" "
+                else:
+                    line=test
+            if line.strip() and py < CONTENT_MAX_Y:
+                screen.blit(font_nm.render(line.strip(),True,TEXT_WHITE),(px,py))
+                py+=font_nm.get_height()+8
+
+        # Separator
+        if py < CONTENT_MAX_Y:
+            pygame.draw.line(screen,BORDER,(px,py),(px+line_w,py)); py+=10
+
+        # Stats section
+        if py < CONTENT_MAX_Y:
+            lbl=font_sm.render("STATS",True,TEXT_DIM)
+            screen.blit(lbl,(px,py)); py+=lbl.get_height()+4
+
+        stats=[
+            ("Move",   str(move_count)),
+            ("Nodes",  str(nodes_explored)),
+            ("Depth",  str(depth)),
+            ("Algo",   "α-β Pruning"),
+        ]
+        for k,v in stats:
+            if py >= CONTENT_MAX_Y: break
+            kt=font_sm.render(k+":", True, TEXT_DIM)
+            vt=font_nm.render(v,     True, TEXT_WHITE)
+            screen.blit(kt,(px, py))
+            screen.blit(vt,(px+kt.get_width()+6, py))
+            py += max(kt.get_height(), vt.get_height()) + 4
+        py+=6
+
+        # Separator
+        if py < CONTENT_MAX_Y:
+            pygame.draw.line(screen,BORDER,(px,py),(px+line_w,py)); py+=10
+
+        # Pieces section
+        if py < CONTENT_MAX_Y:
+            lbl=font_sm.render("PIECES",True,TEXT_DIM)
+            screen.blit(lbl,(px,py)); py+=lbl.get_height()+4
 
         blue_c,red_c=_count_pieces(game.board)
-        screen.blit(font_sm.render("PIECES:",True,TEXT_DIM),(px,py)); py+=18
-        screen.blit(font_sm.render("BLUE (You)",True,ACCENT_BLUE),(px,py)); py+=16
-        _draw_piece_bar(screen,px,py,max(80,PANEL_W-PAD*2-50),14,blue_c,INIT_PIECES,PIECE_BLUE,fonts); py+=26
-        screen.blit(font_sm.render("RED (AI)",True,ACCENT_RED),(px,py)); py+=16
-        _draw_piece_bar(screen,px,py,max(80,PANEL_W-PAD*2-50),14,red_c,INIT_PIECES,PIECE_RED,fonts); py+=26
-        pygame.draw.line(screen,BORDER,(px,py),(px+PANEL_W-PAD*2,py)); py+=14
-        screen.blit(font_sm.render("YOU  = BLUE ●",True,ACCENT_BLUE),(px,py)); py+=16
-        screen.blit(font_sm.render("AI   = RED  ●",True,ACCENT_RED),(px,py)); py+=20
+        bar_w = max(60, line_w - 40)
+        bar_h = max(10, int(SH*0.012))
 
-        if game_over and winner:
-            pygame.draw.line(screen,BORDER,(px,py),(px+PANEL_W-PAD*2,py)); py+=14
+        if py < CONTENT_MAX_Y:
+            screen.blit(font_sm.render("BLUE (You)",True,ACCENT_BLUE),(px,py)); py+=font_sm.get_height()+3
+        if py < CONTENT_MAX_Y:
+            _draw_piece_bar(screen,px,py,bar_w,bar_h,blue_c,INIT_PIECES,PIECE_BLUE,font_sm,ACCENT_BLUE)
+            py+=bar_h+8
+
+        if py < CONTENT_MAX_Y:
+            screen.blit(font_sm.render("RED  (AI) ",True,ACCENT_RED),(px,py)); py+=font_sm.get_height()+3
+        if py < CONTENT_MAX_Y:
+            _draw_piece_bar(screen,px,py,bar_w,bar_h,red_c,INIT_PIECES,PIECE_RED,font_sm,ACCENT_RED)
+            py+=bar_h+8
+        py+=4
+
+        # Separator
+        if py < CONTENT_MAX_Y:
+            pygame.draw.line(screen,BORDER,(px,py),(px+line_w,py)); py+=10
+
+        # Legend
+        if py < CONTENT_MAX_Y:
+            screen.blit(font_sm.render("● BLUE = You",True,ACCENT_BLUE),(px,py)); py+=font_sm.get_height()+3
+        if py < CONTENT_MAX_Y:
+            screen.blit(font_sm.render("● RED  = AI", True,ACCENT_RED), (px,py)); py+=font_sm.get_height()+8
+
+        # Winner section (only when game over)
+        if game_over and winner and py < CONTENT_MAX_Y:
+            pygame.draw.line(screen,BORDER,(px,py),(px+line_w,py)); py+=10
             wc=ACCENT_BLUE if "BLUE" in winner else ACCENT_RED
-            screen.blit(font_xl.render("WINNER:",True,ACCENT_GOLD),(px,py)); py+=32
-            screen.blit(font_lg.render(winner,True,wc),(px,py))
+            t=font_hd.render("WINNER:",True,ACCENT_GOLD)
+            screen.blit(t,(px,py)); py+=t.get_height()+4
+            if py < CONTENT_MAX_Y:
+                wt=font_bd.render(winner,True,wc)
+                screen.blit(wt,(px,py))
 
+        # ── Buttons (fixed at bottom, always visible) ──
         for r,lbl in [(restart_rect,"↺ RESTART"),(back_rect,"← MAIN MENU")]:
             hov=r.collidepoint(mp)
             pygame.draw.rect(screen,PANEL_BG,r,border_radius=6)
             pygame.draw.rect(screen,ACCENT_BLUE if hov else BORDER,r,2,border_radius=6)
-            bt=font_sm.render(lbl,True,TEXT_WHITE)
+            bt=font_nm.render(lbl,True,TEXT_WHITE)
             screen.blit(bt,(r.centerx-bt.get_width()//2,r.centery-bt.get_height()//2))
 
-        # Fade-in
+        # Fade overlays
         if intro_alpha>0:
             fade_surf.set_alpha(int(intro_alpha))
             screen.blit(fade_surf,(0,0))
             intro_alpha=max(0.0,intro_alpha-dt*637)
 
-        # Exit fade-out
         if exiting:
             exit_timer+=dt
             fade_surf.set_alpha(int(255*min(1.0,exit_timer/0.3)))
